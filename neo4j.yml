@@ -1,0 +1,85 @@
+---
+- hosts: my-ec2-instance
+  become: true
+  vars_files:
+    - ./aws_creds.yml
+
+# installing dependencies
+  tasks:
+    - name: update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    - name: Install Java
+      apt:
+        name: openjdk-11-jdk
+        state: present      
+    - name: Add Neo4j APT key
+      apt_key:
+        url: https://debian.neo4j.com/neotechnology.gpg.key
+    - name: Add Neo4j repository
+      apt_repository:
+        repo: deb https://debian.neo4j.com stable 4.3
+        state: present
+        
+# installing, configuring and starting neo4j
+    - name: Install Neo4j
+      apt:
+        name: neo4j
+        state: present
+    - name: Configure Neo4j
+      lineinfile:
+        path: /etc/neo4j/neo4j.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: "#dbms.connectors.default_listen_address=0.0.0.0", line: "dbms.connectors.default_listen_address=0.0.0.0" }
+        - { regexp: "#dbms.connector.bolt.listen_address=:7687", line: "dbms.connector.bolt.listen_address=:7687" }
+        - { regexp: "#dbms.connector.http.listen_address=:7474", line: "dbms.connector.http.listen_address=:7474" }
+    - name: Start Neo4j
+      service:
+        name: neo4j
+        state: started
+
+# installing pip and botocore to use aws modules
+    - name: Install python-pip
+      apt:
+        name: python3-pip
+        state: latest
+    - name: Install boto3 and botocore
+      pip:
+        name:
+          - boto3
+          - botocore
+        state: latest
+
+
+# Changing the security group
+    - name: Get instance ID and current security group
+      ec2_instance_info:
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        filters:
+          "tag:Name": "ne04j"
+      register: instance_facts
+    - name: Get name of security group to use
+      set_fact:
+        security_group_name: "{{ instance_facts.instances[0].security_groups[0].group_name }}"
+    - name: Open ports 7474 and 7687
+      ec2_group:
+        name: "{{ security_group_name }}"
+        description: "Allow inbound traffic for Neo4j"
+        region: "{{ region }}"
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 7474
+              - 7687
+            cidr_ip: 0.0.0.0/0
+        state: present
+        purge_rules: false
+        purge_rules_egress: false
+      become: true
